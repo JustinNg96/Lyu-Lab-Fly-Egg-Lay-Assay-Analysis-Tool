@@ -111,6 +111,11 @@ ui <- fluidPage(
       textInput("keep_ids", "Keep only these IDs (e.g., 1,2,5-10)", value = ""),
 
       tags$hr(),
+      h4("Filtering"),
+      sliderInput("n_filters", "How many filters?", min = 0, max = 6, value = 0, step = 1),
+      uiOutput("dynamic_filters"),
+
+      tags$hr(),
       h4("Titles"),
       textInput("title_custom", "Title"),
       textInput("subtitle_custom", "Subtitle"),
@@ -142,10 +147,6 @@ ui <- fluidPage(
       h4("Split panels"),
       uiOutput("split_selector"),
       checkboxInput("split_free_y", "Free y-scale per panel", TRUE),
-
-      h4("Filtering"),
-      sliderInput("n_filters", "How many filters?", min = 0, max = 6, value = 0, step = 1),
-      uiOutput("dynamic_filters"),
 
       tags$hr(),
       h4("Geoms"),
@@ -468,16 +469,26 @@ server <- function(input, output, session) {
     req(rv$df)
     df <- rv$df
 
-    nF <- input$n_filters
-    if (!is.null(nF) && nF > 0) {
-      for (i in seq_len(nF)) {
+    nF <- input$n_filters %||% 0
+    if (nF > 0) {
+      active_filters <- lapply(seq_len(nF), function(i) {
         col <- input[[paste0("filter_col_", i)]]
         mode <- input[[paste0("filter_mode_", i)]]
         vals <- input[[paste0("filter_val_", i)]]
 
-        if (!is.null(col) && col %in% names(df) && !is.null(vals) && length(vals) > 0) {
-          if (mode == "keep") df <- df %>% filter(as.character(.data[[col]]) %in% vals)
-          if (mode == "remove") df <- df %>% filter(!as.character(.data[[col]]) %in% vals)
+        if (is.null(col) || !(col %in% names(df)) || is.null(vals) || length(vals) == 0) return(NULL)
+        if (!(mode %in% c("keep", "remove"))) return(NULL)
+
+        list(col = col, mode = mode, vals = as.character(vals))
+      })
+
+      active_filters <- Filter(Negate(is.null), active_filters)
+      if (length(active_filters) > 0) {
+        for (flt in active_filters) {
+          col_vals <- as.character(df[[flt$col]])
+          keep_idx <- col_vals %in% flt$vals
+          if (flt$mode == "remove") keep_idx <- !keep_idx
+          df <- df[keep_idx, , drop = FALSE]
         }
       }
     }
@@ -683,6 +694,8 @@ server <- function(input, output, session) {
     if (is.null(nF) || nF == 0) return(NULL)
 
     cols <- names(rv$df)
+    req(length(cols) > 0)
+
     filter_list <- lapply(seq_len(nF), function(i) {
       col_id <- paste0("filter_col_", i)
       mode_id <- paste0("filter_mode_", i)
@@ -988,10 +1001,11 @@ server <- function(input, output, session) {
         ii <- i
         output[[paste0("filter_val_ui_", ii)]] <- renderUI({
           col <- input[[paste0("filter_col_", ii)]]
-          req(col)
+          req(col, rv$df)
+          req(col %in% names(rv$df))
 
           vals <- unique(as.character(rv$df[[col]]))
-          vals <- vals[!is.na(vals)]
+          vals <- sort(vals[!is.na(vals)])
 
           remembered_vals <- rv_filters$vals[[ii]]
           remembered_vals <- remembered_vals[remembered_vals %in% vals]
