@@ -216,11 +216,6 @@ server <- function(input, output, session) {
   rv_anova <- reactiveValues(factors = list(), blocks = list())
   rv_filters <- reactiveValues(cols = list(), modes = list(), vals = list())
 
-  safe_list_get <- function(x, i, default = NULL) {
-    if (is.null(x) || length(x) < i) return(default)
-    x[[i]]
-  }
-
   observeEvent(input$file, {
     req(input$file)
     rv$file_path <- input$file$datapath
@@ -692,10 +687,10 @@ server <- function(input, output, session) {
       col_id <- paste0("filter_col_", i)
       mode_id <- paste0("filter_mode_", i)
 
-      selected_col <- safe_list_get(rv_filters$cols, i)
+      selected_col <- rv_filters$cols[[i]]
       if (is.null(selected_col) || !(selected_col %in% cols)) selected_col <- cols[1]
 
-      selected_mode <- safe_list_get(rv_filters$modes, i)
+      selected_mode <- rv_filters$modes[[i]]
       if (is.null(selected_mode) || !(selected_mode %in% c("keep", "remove"))) selected_mode <- "keep"
 
       tagList(
@@ -998,7 +993,7 @@ server <- function(input, output, session) {
           vals <- unique(as.character(rv$df[[col]]))
           vals <- vals[!is.na(vals)]
 
-          remembered_vals <- safe_list_get(rv_filters$vals, ii, character(0))
+          remembered_vals <- rv_filters$vals[[ii]]
           remembered_vals <- remembered_vals[remembered_vals %in% vals]
 
           selectInput(
