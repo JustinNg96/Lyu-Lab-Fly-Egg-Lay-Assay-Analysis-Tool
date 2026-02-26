@@ -177,6 +177,12 @@ ui <- fluidPage(
         tags$hr(),
         h5("ANOVA settings"),
         checkboxInput("do_anova", "Run ANOVA", TRUE),
+        selectInput(
+          "anova_method",
+          "ANOVA type",
+          choices = c("Regular multi-way ANOVA" = "regular", "Multi-way Welch ANOVA" = "welch"),
+          selected = "regular"
+        ),
         sliderInput("anova_n_factors", "How many factors?", min = 1, max = 6, value = 1, step = 1),
         sliderInput("anova_n_blocks", "How many blocks? (optional)", min = 0, max = 6, value = 0, step = 1),
         uiOutput("anova_selectors_dynamic"),
@@ -519,6 +525,10 @@ server <- function(input, output, session) {
       return(helpText("Turn on: Enable stats → Run ANOVA → Run Tukey HSD."))
     }
 
+    if (identical(input$anova_method %||% "regular", "welch")) {
+      return(helpText("Tukey HSD is only available for regular ANOVA."))
+    }
+
     df <- df_work()
     fml <- build_anova_formula(df)
     if (is.null(fml)) return(helpText("Pick at least 1 factor to fit ANOVA."))
@@ -611,15 +621,16 @@ server <- function(input, output, session) {
       }
     }
 
-    paste(
+    assumption_lines <- c(
       "Model used for checks:",
       paste(deparse(fml), collapse = " "),
       "",
+      homo_lines,
       shapiro_line,
-      out_line,
-      paste(homo_lines, collapse = "\n"),
-      sep = "\n"
+      out_line
     )
+
+    paste(assumption_lines[nzchar(assumption_lines)], collapse = "\n")
   }
 
   output$assump_out <- renderPrint({
@@ -669,31 +680,58 @@ server <- function(input, output, session) {
     if (length(blocks) > 0) rhs <- paste(rhs, "+", paste(blocks, collapse = " + "))
 
     fml <- as.formula(paste(y, "~", rhs))
-    fit <- tryCatch(aov(fml, data = df), error = function(e) e)
-    if (inherits(fit, "error")) return(list(err = paste("ANOVA failed:", fit$message)))
+    anova_method <- input$anova_method %||% "regular"
+    if (identical(anova_method, "regular")) {
+      fit <- tryCatch(aov(fml, data = df), error = function(e) e)
+      if (inherits(fit, "error")) return(list(err = paste("ANOVA failed:", fit$message)))
 
-    tuk <- NULL
-    if (isTRUE(input$do_tukey)) {
-      term <- input$tukey_term
-      if (is.null(term) || !nzchar(term)) {
-        tuk <- list(error = "Pick a Tukey term.")
-      } else {
-        tuk0 <- tryCatch(TukeyHSD(fit, which = term), error = function(e) e)
-        if (inherits(tuk0, "error")) {
-          tuk <- list(error = tuk0$message)
-        } else if (!(term %in% names(tuk0))) {
-          tuk <- list(error = paste0("Tukey term not in model: ", term, ". Available: ", paste(names(tuk0), collapse = ", ")))
+      tuk <- NULL
+      if (isTRUE(input$do_tukey)) {
+        term <- input$tukey_term
+        if (is.null(term) || !nzchar(term)) {
+          tuk <- list(error = "Pick a Tukey term.")
         } else {
-          alpha <- input$tukey_alpha
-          mat <- as.data.frame(tuk0[[term]])
-          mat$Comparison <- rownames(mat)
-          if (isTRUE(input$tukey_sig_only)) mat <- mat[mat$`p adj` < alpha, , drop = FALSE]
-          tuk <- list(filtered = mat, which = term, raw = tuk0)
+          tuk0 <- tryCatch(TukeyHSD(fit, which = term), error = function(e) e)
+          if (inherits(tuk0, "error")) {
+            tuk <- list(error = tuk0$message)
+          } else if (!(term %in% names(tuk0))) {
+            tuk <- list(error = paste0("Tukey term not in model: ", term, ". Available: ", paste(names(tuk0), collapse = ", ")))
+          } else {
+            alpha <- input$tukey_alpha
+            mat <- as.data.frame(tuk0[[term]])
+            mat$Comparison <- rownames(mat)
+            if (isTRUE(input$tukey_sig_only)) mat <- mat[mat$`p adj` < alpha, , drop = FALSE]
+            tuk <- list(filtered = mat, which = term, raw = tuk0)
+          }
         }
       }
+
+      return(list(formula = fml, summary = summary(fit), tukey = tuk, method = "regular"))
     }
 
-    list(formula = fml, summary = summary(fit), tukey = tuk)
+    if (length(blocks) > 0) {
+      return(list(err = "Multi-way Welch ANOVA does not support block terms in this app. Set blocks to 0.", method = "welch"))
+    }
+
+    if (length(factors) == 1) {
+      welch_fit <- tryCatch(oneway.test(fml, data = df, var.equal = FALSE), error = function(e) e)
+      if (inherits(welch_fit, "error")) return(list(err = paste("Welch ANOVA failed:", welch_fit$message), method = "welch"))
+      return(list(formula = fml, summary = welch_fit, tukey = NULL, method = "welch"))
+    }
+
+    if (!requireNamespace("welchADF", quietly = TRUE)) {
+      return(list(
+        err = "Multi-way Welch ANOVA requires the 'welchADF' package. Install it to run Welch with 2+ factors.",
+        method = "welch"
+      ))
+    }
+
+    welch_fit <- tryCatch(welchADF::welchADF.test(fml, data = df), error = function(e) e)
+    if (inherits(welch_fit, "error")) {
+      return(list(err = paste("Multi-way Welch ANOVA failed:", welch_fit$message), method = "welch"))
+    }
+
+    list(formula = fml, summary = welch_fit, tukey = NULL, method = "welch")
   })
 
   output$dynamic_filters <- renderUI({
@@ -739,10 +777,11 @@ server <- function(input, output, session) {
 
     cat("Model formula:\n")
     print(res$formula)
-    cat("\nANOVA summary:\n")
+    method_label <- if (identical(res$method, "welch")) "Welch ANOVA summary" else "ANOVA summary"
+    cat("\n", method_label, ":\n", sep = "")
     print(res$summary)
 
-    if (isTRUE(input$do_tukey)) {
+    if (isTRUE(input$do_tukey) && !identical(res$method, "welch")) {
       cat("\nTukey HSD:\n")
       if (is.null(res$tukey)) {
         cat("No Tukey results.\n")
@@ -752,6 +791,8 @@ server <- function(input, output, session) {
         cat("Term:", res$tukey$which, "\n")
         print(res$tukey$filtered)
       }
+    } else if (isTRUE(input$do_tukey) && identical(res$method, "welch")) {
+      cat("\nTukey HSD skipped: not available for Welch ANOVA in this app.\n")
     }
   })
 
