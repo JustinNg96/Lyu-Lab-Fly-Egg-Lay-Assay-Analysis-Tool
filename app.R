@@ -212,6 +212,10 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   default_fill_order <- c("OO", "YO", "OY", "YY")
 
+  coalesce_chr <- function(current, fallback = character(0)) {
+    if (!is.null(current)) as.character(current) else as.character(fallback)
+  }
+
   safe_list_get <- function(x, i) {
     if (length(x) >= i) x[[i]] else NULL
   }
@@ -323,7 +327,7 @@ server <- function(input, output, session) {
       levs
     }
 
-    cur <- rv_fill_levels()
+    cur <- coalesce_chr(input$fill_levels_selected, isolate(rv_fill_levels()))
     selected <- if (!is.null(cur) && length(cur) > 0) {
       kept <- cur[cur %in% preferred]
       if (length(kept) > 0) kept else preferred
@@ -1011,15 +1015,17 @@ server <- function(input, output, session) {
           vals <- unique(as.character(rv$df[[col]]))
           vals <- sort(vals[!is.na(vals)])
 
-          remembered_vals <- safe_list_get(rv_filters$vals, ii)
-          if (is.null(remembered_vals)) remembered_vals <- character(0)
-          remembered_vals <- remembered_vals[remembered_vals %in% vals]
+          selected_vals <- coalesce_chr(
+            input[[paste0("filter_val_", ii)]],
+            isolate(safe_list_get(rv_filters$vals, ii))
+          )
+          selected_vals <- selected_vals[selected_vals %in% vals]
 
           selectInput(
             paste0("filter_val_", ii),
             "Values",
             choices = vals,
-            selected = remembered_vals,
+            selected = selected_vals,
             multiple = TRUE
           )
         })
