@@ -1,0 +1,32 @@
+name: Codex Auto PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "What should Codex do?"
+        required: true
+        type: string
+
+jobs:
+  codex:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Codex
+        run: |
+          npx openai-codex \
+            --prompt "${{ github.event.inputs.prompt }}" \
+            --create-pr
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
