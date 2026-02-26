@@ -11,7 +11,6 @@ on:
 jobs:
   codex_pr:
     runs-on: ubuntu-latest
-
     permissions:
       contents: write
       pull-requests: write
@@ -22,21 +21,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Run Codex and let it edit files in the workspace
       - name: Run Codex
         id: run_codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt: ${{ github.event.inputs.prompt }}
-          # Allow Codex to write changes to the checked-out repo
           sandbox: workspace-write
           safety-strategy: drop-sudo
-          # Run non-interactively (automation)
           codex-args: '["--full-auto"]'
           output-file: codex-output.md
 
-      # Create a PR from whatever changes Codex made
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
@@ -48,6 +43,7 @@ jobs:
             Prompt:
             ${{ github.event.inputs.prompt }}
 
-            Codex output is saved in codex-output.md (in the workflow workspace).
+            Codex final message:
+            ${{ steps.run_codex.outputs.final-message }}
           branch: codex/${{ github.run_id }}
           delete-branch: true
