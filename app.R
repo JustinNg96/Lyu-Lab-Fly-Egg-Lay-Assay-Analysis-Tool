@@ -212,6 +212,10 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   default_fill_order <- c("OO", "YO", "OY", "YY")
 
+  safe_list_get <- function(x, i) {
+    if (length(x) >= i) x[[i]] else NULL
+  }
+
   rv <- reactiveValues(df = NULL, file_path = NULL, sheets = NULL)
   rv_fill_levels <- reactiveVal(NULL)
   rv_anova <- reactiveValues(factors = list(), blocks = list())
@@ -700,10 +704,10 @@ server <- function(input, output, session) {
       col_id <- paste0("filter_col_", i)
       mode_id <- paste0("filter_mode_", i)
 
-      selected_col <- rv_filters$cols[[i]]
+      selected_col <- safe_list_get(rv_filters$cols, i)
       if (is.null(selected_col) || !(selected_col %in% cols)) selected_col <- cols[1]
 
-      selected_mode <- rv_filters$modes[[i]]
+      selected_mode <- safe_list_get(rv_filters$modes, i)
       if (is.null(selected_mode) || !(selected_mode %in% c("keep", "remove"))) selected_mode <- "keep"
 
       tagList(
@@ -1007,7 +1011,8 @@ server <- function(input, output, session) {
           vals <- unique(as.character(rv$df[[col]]))
           vals <- sort(vals[!is.na(vals)])
 
-          remembered_vals <- rv_filters$vals[[ii]]
+          remembered_vals <- safe_list_get(rv_filters$vals, ii)
+          if (is.null(remembered_vals)) remembered_vals <- character(0)
           remembered_vals <- remembered_vals[remembered_vals %in% vals]
 
           selectInput(
