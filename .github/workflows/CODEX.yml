@@ -23,14 +23,13 @@ jobs:
 
       - name: Run Codex
         id: run_codex
-        uses: openai/codex
+        uses: openai/codex-action@v1
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt: ${{ github.event.inputs.prompt }}
-          sandbox: workspace-write
-          safety-strategy: drop-sudo
-          codex-args: '["--full-auto"]'
-          output-file: codex-output.md
+        openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+        prompt: ${{ github.event.inputs.prompt }}
+        sandbox: workspace-write
+        codex-args: '["--full-auto"]'
+        output-file: codex-output.md
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
