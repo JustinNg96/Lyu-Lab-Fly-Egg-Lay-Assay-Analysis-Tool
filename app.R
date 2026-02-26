@@ -694,6 +694,8 @@ server <- function(input, output, session) {
     if (is.null(nF) || nF == 0) return(NULL)
 
     cols <- names(rv$df)
+    req(length(cols) > 0)
+
     filter_list <- lapply(seq_len(nF), function(i) {
       col_id <- paste0("filter_col_", i)
       mode_id <- paste0("filter_mode_", i)
@@ -999,7 +1001,8 @@ server <- function(input, output, session) {
         ii <- i
         output[[paste0("filter_val_ui_", ii)]] <- renderUI({
           col <- input[[paste0("filter_col_", ii)]]
-          req(col)
+          req(col, rv$df)
+          req(col %in% names(rv$df))
 
           vals <- unique(as.character(rv$df[[col]]))
           vals <- sort(vals[!is.na(vals)])
