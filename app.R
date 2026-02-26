@@ -130,8 +130,7 @@ ui <- fluidPage(
 
       tags$hr(),
       h4("Reorder fill levels"),
-      textInput("fill_order", "Order (comma-separated)", value = "OO,YO,OY,YY"),
-      actionButton("apply_fill_order", "Apply order"),
+      uiOutput("fill_level_selector_ui"),
 
       tags$hr(),
       h4("Plot size"),
@@ -176,7 +175,7 @@ ui <- fluidPage(
 
         tags$hr(),
         h5("ANOVA settings"),
-        checkboxInput("do_anova", "Run ANOVA", FALSE),
+        checkboxInput("do_anova", "Run ANOVA", TRUE),
         sliderInput("anova_n_factors", "How many factors?", min = 1, max = 6, value = 1, step = 1),
         sliderInput("anova_n_blocks", "How many blocks? (optional)", min = 0, max = 6, value = 0, step = 1),
         uiOutput("anova_selectors_dynamic"),
@@ -215,6 +214,7 @@ server <- function(input, output, session) {
   rv <- reactiveValues(df = NULL, file_path = NULL, sheets = NULL)
   rv_fill_levels <- reactiveVal(NULL)
   rv_anova <- reactiveValues(factors = list(), blocks = list())
+  rv_filters <- reactiveValues(cols = list(), modes = list(), vals = list())
 
   observeEvent(input$file, {
     req(input$file)
@@ -296,6 +296,47 @@ server <- function(input, output, session) {
 
     cur <- if (!is.null(input$split_col) && input$split_col %in% cols) input$split_col else ""
     selectInput("split_col", "Split plots by (optional)", choices = c("None" = "", cols), selected = cur)
+  })
+
+  output$fill_level_selector_ui <- renderUI({
+    req(rv$df)
+
+    if (is.null(input$fillcol) || !nzchar(input$fillcol) || !(input$fillcol %in% names(rv$df))) {
+      return(helpText("Pick a Fill column first to choose included levels and order."))
+    }
+
+    levs <- unique(trimws(as.character(df_work()[[input$fillcol]])))
+    levs <- levs[!is.na(levs) & nzchar(levs)]
+
+    if (length(levs) == 0) {
+      return(helpText("No fill levels available after current filters."))
+    }
+
+    preferred <- if (all(default_fill_order %in% levs)) {
+      c(default_fill_order, setdiff(levs, default_fill_order))
+    } else {
+      levs
+    }
+
+    cur <- rv_fill_levels()
+    selected <- if (!is.null(cur) && length(cur) > 0) {
+      kept <- cur[cur %in% preferred]
+      if (length(kept) > 0) kept else preferred
+    } else {
+      preferred
+    }
+
+    tagList(
+      helpText("Select levels to include. Drag selected items to set plotting order."),
+      selectizeInput(
+        "fill_levels_selected",
+        "Included fill levels (ordered)",
+        choices = preferred,
+        selected = selected,
+        multiple = TRUE,
+        options = list(plugins = list("drag_drop"), closeAfterSelect = FALSE)
+      )
+    )
   })
 
   get_anova_factors <- function() {
@@ -524,7 +565,7 @@ server <- function(input, output, session) {
       shapiro_line <- sprintf("Shapiro-Wilk on residuals: W=%.3f, p=%.4g", sw$statistic, sw$p.value)
     }
 
-    stdr <- rstandard(fit)
+    stdr <- tryCatch(rstandard(fit), error = function(e) rep(NA_real_, length(r)))
     out_line <- sprintf("Outliers (|standardized residual| > 3): %d", sum(abs(stdr) > 3, na.rm = TRUE))
 
     homo_lines <- character(0)
@@ -532,11 +573,19 @@ server <- function(input, output, session) {
       factors <- get_anova_factors()
       if (length(factors) >= 1) {
         grp <- interaction(df[, factors, drop = FALSE], drop = TRUE, sep = ":")
-        fl <- fligner.test(df[[y]] ~ grp)
-        bt <- bartlett.test(df[[y]] ~ grp)
+        fl <- tryCatch(fligner.test(df[[y]] ~ grp), error = function(e) e)
+        bt <- tryCatch(bartlett.test(df[[y]] ~ grp), error = function(e) e)
         homo_lines <- c(
-          sprintf("Fligner-Killeen (variance across groups): chi^2=%.3f, p=%.4g", fl$statistic, fl$p.value),
-          sprintf("Bartlett (variance across groups): K^2=%.3f, p=%.4g", bt$statistic, bt$p.value)
+          if (inherits(fl, "error")) {
+            paste0("Fligner-Killeen failed: ", fl$message)
+          } else {
+            sprintf("Fligner-Killeen (variance across groups): chi^2=%.3f, p=%.4g", fl$statistic, fl$p.value)
+          },
+          if (inherits(bt, "error")) {
+            paste0("Bartlett failed: ", bt$message)
+          } else {
+            sprintf("Bartlett (variance across groups): K^2=%.3f, p=%.4g", bt$statistic, bt$p.value)
+          }
         )
       } else {
         homo_lines <- "Variance checks: need ≥1 factor."
@@ -637,11 +686,18 @@ server <- function(input, output, session) {
     filter_list <- lapply(seq_len(nF), function(i) {
       col_id <- paste0("filter_col_", i)
       mode_id <- paste0("filter_mode_", i)
+
+      selected_col <- rv_filters$cols[[i]]
+      if (is.null(selected_col) || !(selected_col %in% cols)) selected_col <- cols[1]
+
+      selected_mode <- rv_filters$modes[[i]]
+      if (is.null(selected_mode) || !(selected_mode %in% c("keep", "remove"))) selected_mode <- "keep"
+
       tagList(
         tags$hr(),
         h5(paste("Filter", i)),
-        selectInput(col_id, "Column", choices = cols),
-        selectInput(mode_id, "Mode", choices = c("Keep selected" = "keep", "Remove selected" = "remove")),
+        selectInput(col_id, "Column", choices = cols, selected = selected_col),
+        selectInput(mode_id, "Mode", choices = c("Keep selected" = "keep", "Remove selected" = "remove"), selected = selected_mode),
         uiOutput(paste0("filter_val_ui_", i))
       )
     })
@@ -678,41 +734,35 @@ server <- function(input, output, session) {
     }
   })
 
-  observeEvent(input$fillcol, {
-    df <- df_work()
+  observeEvent(list(input$fillcol, input$fill_levels_selected), {
+    req(rv$df)
 
-    if (!nzchar(input$fillcol)) {
+    if (is.null(input$fillcol) || !nzchar(input$fillcol) || !(input$fillcol %in% names(rv$df))) {
       rv_fill_levels(NULL)
       return()
     }
 
-    levs <- unique(trimws(as.character(df[[input$fillcol]])))
-    if (nzchar(input$fill_order)) {
-      new_levels <- strsplit(input$fill_order, ",")[[1]] |> trimws()
-      new_levels <- new_levels[nzchar(new_levels)]
-      if (length(new_levels) > 0) {
-        rv_fill_levels(new_levels)
-        return()
-      }
+    levs <- unique(trimws(as.character(df_work()[[input$fillcol]])))
+    levs <- levs[!is.na(levs) & nzchar(levs)]
+
+    if (length(levs) == 0) {
+      rv_fill_levels(NULL)
+      return()
+    }
+
+    picked <- input$fill_levels_selected
+    if (!is.null(picked)) {
+      picked <- picked[picked %in% levs]
+      rv_fill_levels(if (length(picked) > 0) picked else levs)
+      return()
     }
 
     if (all(default_fill_order %in% levs)) {
-      updateTextInput(session, "fill_order", value = paste(default_fill_order, collapse = ","))
-      rv_fill_levels(default_fill_order)
+      rv_fill_levels(c(default_fill_order, setdiff(levs, default_fill_order)))
     } else {
-      updateTextInput(session, "fill_order", value = paste(levs, collapse = ","))
       rv_fill_levels(levs)
     }
-  }, ignoreInit = TRUE)
-
-  observeEvent(input$apply_fill_order, {
-    if (!nzchar(input$fillcol)) return()
-    new_levels <- strsplit(input$fill_order, ",")[[1]] |> trimws()
-    new_levels <- new_levels[nzchar(new_levels)]
-    if (length(new_levels) == 0) return()
-    rv_fill_levels(new_levels)
-    showNotification("Fill order applied.", type = "message")
-  })
+  }, ignoreInit = FALSE)
 
   make_one_plot <- function(df) {
     req(input$xcol, input$ycol)
@@ -943,10 +993,38 @@ server <- function(input, output, session) {
           vals <- unique(as.character(rv$df[[col]]))
           vals <- vals[!is.na(vals)]
 
-          selectInput(paste0("filter_val_", ii), "Values", choices = vals, multiple = TRUE)
+          remembered_vals <- rv_filters$vals[[ii]]
+          remembered_vals <- remembered_vals[remembered_vals %in% vals]
+
+          selectInput(
+            paste0("filter_val_", ii),
+            "Values",
+            choices = vals,
+            selected = remembered_vals,
+            multiple = TRUE
+          )
         })
       })
     }
+  })
+
+  observe({
+    nF <- input$n_filters
+    if (is.null(nF) || nF == 0) return()
+
+    for (i in seq_len(nF)) {
+      col <- input[[paste0("filter_col_", i)]]
+      mode <- input[[paste0("filter_mode_", i)]]
+      vals <- input[[paste0("filter_val_", i)]]
+
+      if (!is.null(col)) rv_filters$cols[[i]] <- col
+      if (!is.null(mode)) rv_filters$modes[[i]] <- mode
+      if (!is.null(vals)) rv_filters$vals[[i]] <- vals
+    }
+
+    if (length(rv_filters$cols) > nF) rv_filters$cols <- rv_filters$cols[seq_len(nF)]
+    if (length(rv_filters$modes) > nF) rv_filters$modes <- rv_filters$modes[seq_len(nF)]
+    if (length(rv_filters$vals) > nF) rv_filters$vals <- rv_filters$vals[seq_len(nF)]
   })
 
   output$plot_ui <- renderUI({
@@ -994,6 +1072,9 @@ server <- function(input, output, session) {
         plotOutput(outputId = paste0("plot_", i), height = paste0(input$plot_height * 72, "px")),
         tags$hr(),
         h4(paste0("Stats: ", input$split_col, " = ", lvls[i])),
+        h5("Assumption checks"),
+        verbatimTextOutput(paste0("assump_out_", i)),
+        h5("ANOVA / Tukey"),
         verbatimTextOutput(paste0("anova_out_", i)),
         tags$hr()
       )
@@ -1032,6 +1113,11 @@ server <- function(input, output, session) {
           p <- make_one_plot(dfi) + labs(subtitle = new_sub)
           if (isTRUE(input$split_free_y)) p <- p + coord_cartesian(ylim = range(dfi[[input$ycol]], na.rm = TRUE))
           p
+        })
+
+        output[[paste0("assump_out_", ii)]] <- renderPrint({
+          dfi <- df %>% filter(as.character(.data[[input$split_col]]) == lvl)
+          cat(assumption_results_for_df(dfi), "\n")
         })
 
         output[[paste0("anova_out_", ii)]] <- renderPrint({
