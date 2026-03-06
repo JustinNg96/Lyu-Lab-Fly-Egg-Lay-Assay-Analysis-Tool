@@ -574,7 +574,7 @@ server <- function(input, output, session) {
     if (length(terms) == 0) return(helpText("No Tukey terms available for this model."))
 
     preferred_term <- if (!is.null(input$xcol) && nzchar(input$xcol)) {
-      hits <- terms[vapply(terms, term_includes_x, logical(1), xcol = input$xcol)]
+      hits <- terms[grepl(paste0("(^|:)", input$xcol, "(:|$)"), terms)]
       if (length(hits) > 0) hits[1] else terms[1]
     } else {
       terms[1]
@@ -1025,6 +1025,13 @@ server <- function(input, output, session) {
             }
             }
           }
+        } else {
+          showNotification(
+            paste0("Tukey letters are only drawn when the selected Tukey term includes X column ('", input$xcol, "')."),
+            type = "message",
+            duration = 4
+          )
+        }
       }
     }
 
