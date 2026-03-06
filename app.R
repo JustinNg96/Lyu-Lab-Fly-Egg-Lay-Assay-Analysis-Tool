@@ -78,6 +78,23 @@ parse_exclude_ids <- function(txt) {
   unique(out)
 }
 
+normalize_term_token <- function(x) {
+  x <- trimws(as.character(x))
+  x <- gsub("`", "", x, fixed = TRUE)
+  x <- gsub("^as\\.factor\\((.*)\\)$", "\\1", x)
+  x <- gsub("^factor\\((.*)\\)$", "\\1", x)
+  x <- gsub("^I\\((.*)\\)$", "\\1", x)
+  x
+}
+
+term_includes_x <- function(term, xcol) {
+  if (is.null(term) || !nzchar(term) || is.null(xcol) || !nzchar(xcol)) return(FALSE)
+  tokens <- strsplit(as.character(term), ":", fixed = TRUE)[[1]]
+  tokens <- vapply(tokens, normalize_term_token, character(1))
+  target <- normalize_term_token(xcol)
+  any(tokens == target)
+}
+
 ui <- fluidPage(
   titlePanel("Plot Builder (Pivot-Style ggplot GUI)"),
 
@@ -556,7 +573,14 @@ server <- function(input, output, session) {
     terms <- get_tukey_terms_from_fit(fit)
     if (length(terms) == 0) return(helpText("No Tukey terms available for this model."))
 
-    sel <- if (!is.null(input$tukey_term) && input$tukey_term %in% terms) input$tukey_term else terms[1]
+    preferred_term <- if (!is.null(input$xcol) && nzchar(input$xcol)) {
+      hits <- terms[vapply(terms, term_includes_x, logical(1), xcol = input$xcol)]
+      if (length(hits) > 0) hits[1] else terms[1]
+    } else {
+      terms[1]
+    }
+
+    sel <- if (!is.null(input$tukey_term) && input$tukey_term %in% terms) input$tukey_term else preferred_term
     selectInput("tukey_term", "Tukey term", choices = terms, selected = sel)
   })
 
@@ -957,12 +981,21 @@ server <- function(input, output, session) {
       if (!is.null(res) && is.null(res$err) && !is.null(res$tukey) && !is.null(res$tukey$raw)) {
         term <- res$tukey$which
         term_vars <- strsplit(term, ":", fixed = TRUE)[[1]]
+        term_vars <- vapply(term_vars, normalize_term_token, character(1))
 
-        if (input$xcol %in% term_vars) {
-          letters_df <- tukey_letters_from_raw(res$tukey$raw, term, alpha = input$tukey_alpha)
+        if (term_includes_x(term, input$xcol)) {
+          missing_vars <- setdiff(term_vars, names(df))
+          if (length(missing_vars) > 0) {
+            showNotification(
+              paste0("Cannot draw Tukey letters for term '", term, "' because these term columns are not in the plot data: ", paste(missing_vars, collapse = ", "), "."),
+              type = "warning",
+              duration = 6
+            )
+          } else {
+            letters_df <- tukey_letters_from_raw(res$tukey$raw, term, alpha = input$tukey_alpha)
 
-          if (!is.null(letters_df) && nrow(letters_df) > 0) {
-            df$.__tukey_key__ <- interaction(df[, term_vars, drop = FALSE], drop = TRUE, sep = ":")
+            if (!is.null(letters_df) && nrow(letters_df) > 0) {
+              df$.__tukey_key__ <- interaction(df[, term_vars, drop = FALSE], drop = TRUE, sep = ":")
 
             if (nzchar(input$fillcol)) {
               pos_df <- df %>%
@@ -991,7 +1024,14 @@ server <- function(input, output, session) {
             } else {
               p <- p + geom_text(data = pos_df, aes(x = .__xlab__, y = ypos, label = letter), inherit.aes = FALSE, vjust = 0, fontface = "bold")
             }
+            }
           }
+        } else {
+          showNotification(
+            paste0("Tukey letters are only drawn when the selected Tukey term includes X column ('", input$xcol, "')."),
+            type = "message",
+            duration = 4
+          )
         }
       }
     }
