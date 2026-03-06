@@ -595,12 +595,14 @@ server <- function(input, output, session) {
     terms <- get_tukey_terms_from_fit(fit)
     if (length(terms) == 0) return(helpText("No Tukey terms available for this model."))
 
-    sel <- choose_preferred_tukey_term(
-      terms = terms,
-      current = input$tukey_term,
-      xcol = input$xcol,
-      fillcol = input$fillcol
-    )
+    preferred_term <- if (!is.null(input$xcol) && nzchar(input$xcol)) {
+      hits <- terms[grepl(paste0("(^|:)", input$xcol, "(:|$)"), terms)]
+      if (length(hits) > 0) hits[1] else terms[1]
+    } else {
+      terms[1]
+    }
+
+    sel <- if (!is.null(input$tukey_term) && input$tukey_term %in% terms) input$tukey_term else preferred_term
     selectInput("tukey_term", "Tukey term", choices = terms, selected = sel)
   })
 
@@ -1050,6 +1052,13 @@ server <- function(input, output, session) {
             }
             }
           }
+        } else {
+          showNotification(
+            paste0("Tukey letters are only drawn when the selected Tukey term includes X column ('", input$xcol, "')."),
+            type = "message",
+            duration = 4
+          )
+        }
       }
     }
 
