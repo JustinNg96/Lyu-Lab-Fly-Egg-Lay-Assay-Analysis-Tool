@@ -996,10 +996,16 @@ server <- function(input, output, session) {
     }
 
     if (isTRUE(input$show_jitter)) {
+      jitter_pos <- if (nzchar(input$fillcol) || nzchar(input$shapecol)) {
+        position_jitterdodge(jitter.width = input$jitter_width, dodge.width = input$dodge_width)
+      } else {
+        position_jitter(width = input$jitter_width)
+      }
+
       p <- p + geom_jitter(
         alpha = 0.7,
         size = 2,
-        position = position_jitterdodge(jitter.width = input$jitter_width, dodge.width = input$dodge_width)
+        position = jitter_pos
       )
     }
 
