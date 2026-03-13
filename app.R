@@ -1007,8 +1007,9 @@ server <- function(input, output, session) {
       res <- tryCatch(anova_results(), error = function(e) NULL)
       if (!is.null(res) && is.null(res$err) && !is.null(res$tukey) && !is.null(res$tukey$raw)) {
         term <- res$tukey$which
-        term_vars <- strsplit(term, ":", fixed = TRUE)[[1]]
-        term_vars <- vapply(term_vars, normalize_term_token, character(1))
+        if (term_includes_var(term, input$xcol)) {
+          term_vars <- strsplit(term, ":", fixed = TRUE)[[1]]
+          term_vars <- vapply(term_vars, normalize_term_token, character(1))
 
           missing_vars <- setdiff(term_vars, names(df))
           if (length(missing_vars) > 0) {
@@ -1023,33 +1024,33 @@ server <- function(input, output, session) {
             if (!is.null(letters_df) && nrow(letters_df) > 0) {
               df$.__tukey_key__ <- interaction(df[, term_vars, drop = FALSE], drop = TRUE, sep = ":")
 
-            if (nzchar(input$fillcol)) {
-              pos_df <- df %>%
-                group_by(.__xlab__, .data[[input$fillcol]], .__tukey_key__) %>%
-                summarise(ypos = max(.data[[input$ycol]], na.rm = TRUE), .groups = "drop")
-            } else {
-              pos_df <- df %>%
-                group_by(.__xlab__, .__tukey_key__) %>%
-                summarise(ypos = max(.data[[input$ycol]], na.rm = TRUE), .groups = "drop")
-            }
+              if (nzchar(input$fillcol)) {
+                pos_df <- df %>%
+                  group_by(.__xlab__, .data[[input$fillcol]], .__tukey_key__) %>%
+                  summarise(ypos = max(.data[[input$ycol]], na.rm = TRUE), .groups = "drop")
+              } else {
+                pos_df <- df %>%
+                  group_by(.__xlab__, .__tukey_key__) %>%
+                  summarise(ypos = max(.data[[input$ycol]], na.rm = TRUE), .groups = "drop")
+              }
 
-            pos_df <- pos_df %>% left_join(letters_df, by = c(".__tukey_key__" = "level"))
-            yr <- input$ymax - input$ymin
-            if (is.null(yr) || is.na(yr) || yr == 0) yr <- 1
-            pos_df$ypos <- pos_df$ypos + 0.05 * yr
+              pos_df <- pos_df %>% left_join(letters_df, by = c(".__tukey_key__" = "level"))
+              yr <- input$ymax - input$ymin
+              if (is.null(yr) || is.na(yr) || yr == 0) yr <- 1
+              pos_df$ypos <- pos_df$ypos + 0.05 * yr
 
-            if (nzchar(input$fillcol)) {
-              p <- p + geom_text(
-                data = pos_df,
-                aes(x = .__xlab__, y = ypos, label = letter, group = .data[[input$fillcol]]),
-                inherit.aes = FALSE,
-                position = position_dodge(width = input$dodge_width),
-                vjust = 0,
-                fontface = "bold"
-              )
-            } else {
-              p <- p + geom_text(data = pos_df, aes(x = .__xlab__, y = ypos, label = letter), inherit.aes = FALSE, vjust = 0, fontface = "bold")
-            }
+              if (nzchar(input$fillcol)) {
+                p <- p + geom_text(
+                  data = pos_df,
+                  aes(x = .__xlab__, y = ypos, label = letter, group = .data[[input$fillcol]]),
+                  inherit.aes = FALSE,
+                  position = position_dodge(width = input$dodge_width),
+                  vjust = 0,
+                  fontface = "bold"
+                )
+              } else {
+                p <- p + geom_text(data = pos_df, aes(x = .__xlab__, y = ypos, label = letter), inherit.aes = FALSE, vjust = 0, fontface = "bold")
+              }
             }
           }
         } else {
