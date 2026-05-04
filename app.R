@@ -126,7 +126,7 @@ ui <- fluidPage(
     .well { max-height: calc(100vh - 120px); overflow-y: auto; }\
     #plotpane {\
       height: calc(100vh - 140px);\
-      overflow-y: auto;\
+      overflow: auto;\
       padding-right: 12px;\
       border-left: 1px solid #eee;\
     }\
@@ -212,6 +212,30 @@ ui <- fluidPage(
         h5("Assumption checks (recommended)"),
         checkboxInput("check_assumptions", "Run assumption checks", TRUE),
         checkboxInput("assump_show_groups", "Check variance across groups (Fligner/Bartlett)", TRUE),
+
+        tags$hr(),
+        h5("Two-group t-test"),
+        checkboxInput("do_ttest", "Run t-test", FALSE),
+        conditionalPanel(
+          "input.do_ttest",
+          uiOutput("ttest_y_ui"),
+          uiOutput("ttest_group_col_ui"),
+          uiOutput("ttest_group_levels_ui"),
+          selectInput(
+            "ttest_variance",
+            "Variance",
+            choices = c("Welch (unequal)" = "welch", "Pooled (equal)" = "equal"),
+            selected = "welch"
+          ),
+          checkboxInput("ttest_paired", "Paired (uses ID column)", FALSE),
+          selectInput(
+            "ttest_alternative",
+            "Alternative",
+            choices = c("two-sided" = "two.sided", "A < B (less)" = "less", "A > B (greater)" = "greater"),
+            selected = "two.sided"
+          ),
+          numericInput("ttest_alpha", "Alpha", value = 0.05, min = 0.0001, max = 0.2, step = 0.01)
+        ),
 
         tags$hr(),
         h5("ANOVA settings"),
@@ -312,15 +336,15 @@ server <- function(input, output, session) {
     }
 
     tagList(
-      selectInput("xcol", "X", cols, selected = keep_or(input$xcol, pick("day", 1))),
-      selectInput("ycol", "Y", cols, selected = keep_or(input$ycol, pick("eggs_laid_per_fly", 2))),
+      selectInput("xcol", "X", cols, selected = keep_or(isolate(input$xcol), pick("day", 1))),
+      selectInput("ycol", "Y", cols, selected = keep_or(isolate(input$ycol), pick("eggs_laid_per_fly", 2))),
       selectInput("fillcol", "Fill", c("None" = "", cols), selected = {
-        cur <- keep_or_blank(input$fillcol)
+        cur <- keep_or_blank(isolate(input$fillcol))
         if (nzchar(cur)) cur else if ("group" %in% cols) "group" else ""
       }),
-      selectInput("shapecol", "Shape", c("None" = "", cols), selected = keep_or_blank(input$shapecol)),
-      selectInput("facet_row", "Facet row", c("None" = "", cols), selected = keep_or_blank(input$facet_row)),
-      selectInput("facet_col", "Facet col", c("None" = "", cols), selected = keep_or_blank(input$facet_col))
+      selectInput("shapecol", "Shape", c("None" = "", cols), selected = keep_or_blank(isolate(input$shapecol))),
+      selectInput("facet_row", "Facet row", c("None" = "", cols), selected = keep_or_blank(isolate(input$facet_row))),
+      selectInput("facet_col", "Facet col", c("None" = "", cols), selected = keep_or_blank(isolate(input$facet_col)))
     )
   })
 
@@ -334,9 +358,10 @@ server <- function(input, output, session) {
     req(rv$df)
     cols <- names(rv$df)
 
+    cur_id <- isolate(input$idcol)
     selected_id <- ""
-    if (!is.null(input$idcol) && nzchar(input$idcol) && input$idcol %in% cols) {
-      selected_id <- input$idcol
+    if (!is.null(cur_id) && nzchar(cur_id) && cur_id %in% cols) {
+      selected_id <- cur_id
     } else if ("exp_id" %in% cols) {
       selected_id <- "exp_id"
     }
@@ -348,7 +373,8 @@ server <- function(input, output, session) {
     req(rv$df)
     cols <- names(rv$df)
 
-    cur <- if (!is.null(input$split_col) && input$split_col %in% cols) input$split_col else ""
+    cur_split <- isolate(input$split_col)
+    cur <- if (!is.null(cur_split) && cur_split %in% cols) cur_split else ""
     selectInput("split_col", "Split plots by (optional)", choices = c("None" = "", cols), selected = cur)
   })
 
@@ -372,7 +398,7 @@ server <- function(input, output, session) {
       levs
     }
 
-    cur <- coalesce_chr(input$fill_levels_selected, isolate(rv_fill_levels()))
+    cur <- coalesce_chr(isolate(input$fill_levels_selected), isolate(rv_fill_levels()))
     selected <- if (!is.null(cur) && length(cur) > 0) {
       kept <- cur[cur %in% preferred]
       if (length(kept) > 0) kept else preferred
@@ -390,6 +416,54 @@ server <- function(input, output, session) {
         multiple = TRUE,
         options = list(plugins = list("drag_drop"), closeAfterSelect = FALSE)
       )
+    )
+  })
+
+  output$ttest_y_ui <- renderUI({
+    req(rv$df)
+    cols <- names(rv$df)
+    cur <- isolate(input$ttest_y)
+    fallback_y <- isolate(input$ycol)
+    default <- if (!is.null(cur) && cur %in% cols) cur
+               else if (!is.null(fallback_y) && nzchar(fallback_y) && fallback_y %in% cols) fallback_y
+               else cols[1]
+    selectInput("ttest_y", "Response (Y)", choices = cols, selected = default)
+  })
+
+  output$ttest_group_col_ui <- renderUI({
+    req(rv$df)
+    cols <- names(rv$df)
+    cur <- isolate(input$ttest_group_col)
+    fallback_fill <- isolate(input$fillcol)
+    fallback_x <- isolate(input$xcol)
+    default <- if (!is.null(cur) && cur %in% cols) cur
+               else if (!is.null(fallback_fill) && nzchar(fallback_fill) && fallback_fill %in% cols) fallback_fill
+               else if (!is.null(fallback_x) && nzchar(fallback_x) && fallback_x %in% cols) fallback_x
+               else cols[1]
+    selectInput("ttest_group_col", "Group column", choices = cols, selected = default)
+  })
+
+  output$ttest_group_levels_ui <- renderUI({
+    req(rv$df)
+    g <- input$ttest_group_col
+    if (is.null(g) || !nzchar(g) || !(g %in% names(rv$df))) {
+      return(helpText("Pick a group column first."))
+    }
+    levs <- unique(trimws(as.character(df_work()[[g]])))
+    levs <- sort(levs[!is.na(levs) & nzchar(levs)])
+    if (length(levs) < 2) return(helpText("Need at least 2 levels in the group column after current filters."))
+
+    cur_a <- isolate(input$ttest_group_a)
+    cur_b <- isolate(input$ttest_group_b)
+    sel_a <- if (!is.null(cur_a) && cur_a %in% levs) cur_a else levs[1]
+    sel_b <- if (!is.null(cur_b) && cur_b %in% levs && cur_b != sel_a) cur_b else {
+      alt <- setdiff(levs, sel_a)
+      if (length(alt) > 0) alt[1] else levs[min(2, length(levs))]
+    }
+
+    tagList(
+      selectInput("ttest_group_a", "Group A", choices = levs, selected = sel_a),
+      selectInput("ttest_group_b", "Group B", choices = levs, selected = sel_b)
     )
   })
 
@@ -459,7 +533,7 @@ server <- function(input, output, session) {
 
     factor_pick <- lapply(seq_len(nF), function(i) {
       id <- paste0("anova_factor_", i)
-      mem <- safe_get(rv_anova$factors, i)
+      mem <- isolate(safe_get(rv_anova$factors, i))
       default_guess <- if (i == 1) guess_factor() else ""
       default <- if (!is.null(mem) && mem %in% c("", cols)) mem else default_guess
       selectInput(id, paste0("Factor ", LETTERS[i]), choices = c("None" = "", cols), selected = default)
@@ -467,7 +541,7 @@ server <- function(input, output, session) {
 
     block_pick <- lapply(seq_len(nB), function(i) {
       id <- paste0("anova_block_", i)
-      mem <- safe_get(rv_anova$blocks, i)
+      mem <- isolate(safe_get(rv_anova$blocks, i))
       default_guess <- if (i == 1 && "exp_id" %in% cols) "exp_id" else ""
       default <- if (!is.null(mem) && mem %in% c("", cols)) mem else default_guess
       selectInput(id, paste0("Block ", i), choices = c("None" = "", cols), selected = default)
@@ -489,16 +563,19 @@ server <- function(input, output, session) {
       v <- input[[paste0("anova_factor_", i)]]
       if (!is.null(v)) rv_anova$factors[[i]] <- v
     }
+    if (length(rv_anova$factors) > nF) rv_anova$factors <- rv_anova$factors[seq_len(nF)]
   })
 
   observe({
     req(rv$df)
     nB <- input$anova_n_blocks %||% 0
-    if (nB == 0) return()
-    for (i in seq_len(nB)) {
-      v <- input[[paste0("anova_block_", i)]]
-      if (!is.null(v)) rv_anova$blocks[[i]] <- v
+    if (nB > 0) {
+      for (i in seq_len(nB)) {
+        v <- input[[paste0("anova_block_", i)]]
+        if (!is.null(v)) rv_anova$blocks[[i]] <- v
+      }
     }
+    if (length(rv_anova$blocks) > nB) rv_anova$blocks <- rv_anova$blocks[seq_len(nB)]
   })
 
   get_tukey_terms_from_fit <- function(fit) {
@@ -572,21 +649,7 @@ server <- function(input, output, session) {
     fml <- build_anova_formula(df)
     if (is.null(fml)) return(helpText("Pick at least 1 factor to fit ANOVA."))
 
-    y <- all.vars(fml)[1]
-    df[[y]] <- suppressWarnings(as.numeric(df[[y]]))
-    df <- df[!is.na(df[[y]]), , drop = FALSE]
-
-    factors <- get_anova_factors()
-    for (f in factors) if (f %in% names(df)) df[[f]] <- as.factor(df[[f]])
-
-    nB <- input$anova_n_blocks %||% 0
-    if (nB > 0) {
-      for (i in seq_len(nB)) {
-        b <- input[[paste0("anova_block_", i)]]
-        if (!is.null(b) && nzchar(b) && b %in% names(df)) df[[b]] <- as.factor(df[[b]])
-      }
-    }
-
+    df <- prep_anova_data(df, fml)$df
     if (nrow(df) < 2) return(helpText("Not enough data to fit ANOVA."))
 
     fit <- tryCatch(aov(fml, data = df), error = function(e) NULL)
@@ -602,9 +665,34 @@ server <- function(input, output, session) {
       terms[1]
     }
 
-    sel <- if (!is.null(input$tukey_term) && input$tukey_term %in% terms) input$tukey_term else preferred_term
+    cur_tukey <- isolate(input$tukey_term)
+    sel <- if (!is.null(cur_tukey) && cur_tukey %in% terms) cur_tukey else preferred_term
     selectInput("tukey_term", "Tukey term", choices = terms, selected = sel)
   })
+
+  get_anova_blocks <- function(df_names) {
+    nB <- input$anova_n_blocks %||% 0
+    if (nB == 0) return(character(0))
+    out <- character(0)
+    for (i in seq_len(nB)) {
+      b <- input[[paste0("anova_block_", i)]]
+      if (!is.null(b) && nzchar(b) && b %in% df_names) out <- c(out, b)
+    }
+    unique(out)
+  }
+
+  prep_anova_data <- function(df, fml) {
+    y <- all.vars(fml)[1]
+    df[[y]] <- suppressWarnings(as.numeric(df[[y]]))
+    df <- df[!is.na(df[[y]]), , drop = FALSE]
+
+    factors <- get_anova_factors()
+    for (f in factors) if (f %in% names(df)) df[[f]] <- as.factor(df[[f]])
+
+    for (b in get_anova_blocks(names(df))) df[[b]] <- as.factor(df[[b]])
+
+    list(df = df, y = y, factors = factors)
+  }
 
   assumption_results_for_df <- function(df) {
     if (!isTRUE(input$do_stats) || !isTRUE(input$check_assumptions)) return("Assumption checks are OFF.")
@@ -612,21 +700,9 @@ server <- function(input, output, session) {
     fml <- build_anova_formula(df)
     if (is.null(fml)) return("Pick at least 1 factor to run assumption checks.")
 
-    y <- all.vars(fml)[1]
-    df[[y]] <- suppressWarnings(as.numeric(df[[y]]))
-    df <- df[!is.na(df[[y]]), , drop = FALSE]
+    prep <- prep_anova_data(df, fml)
+    df <- prep$df; y <- prep$y; factors <- prep$factors
     if (nrow(df) < 3) return("Not enough non-NA values (need ≥ 3).")
-
-    factors <- get_anova_factors()
-    for (f in factors) if (f %in% names(df)) df[[f]] <- as.factor(df[[f]])
-
-    nB <- input$anova_n_blocks %||% 0
-    if (nB > 0) {
-      for (i in seq_len(nB)) {
-        b <- input[[paste0("anova_block_", i)]]
-        if (!is.null(b) && nzchar(b) && b %in% names(df)) df[[b]] <- as.factor(df[[b]])
-      }
-    }
 
     fit <- tryCatch(lm(fml, data = df), error = function(e) e)
     if (inherits(fit, "error")) return(paste("Model fit failed:", fit$message))
@@ -645,7 +721,6 @@ server <- function(input, output, session) {
 
     homo_lines <- character(0)
     if (isTRUE(input$assump_show_groups)) {
-      factors <- get_anova_factors()
       if (length(factors) >= 1) {
         grp <- interaction(df[, factors, drop = FALSE], drop = TRUE, sep = ":")
         fl <- tryCatch(fligner.test(df[[y]] ~ grp), error = function(e) e)
@@ -684,48 +759,116 @@ server <- function(input, output, session) {
     cat(assumption_results_for_df(df), "\n")
   })
 
+  run_ttest_for_df <- function(df) {
+    cols <- names(df)
+    y <- input$ttest_y
+    g <- input$ttest_group_col
+    a_lab <- input$ttest_group_a
+    b_lab <- input$ttest_group_b
+
+    if (is.null(y) || !nzchar(y) || !(y %in% cols)) return(list(err = "Pick a response (Y) for the t-test."))
+    if (is.null(g) || !nzchar(g) || !(g %in% cols)) return(list(err = "Pick a group column for the t-test."))
+    if (is.null(a_lab) || !nzchar(a_lab) || is.null(b_lab) || !nzchar(b_lab)) {
+      return(list(err = "Pick Group A and Group B."))
+    }
+    if (identical(a_lab, b_lab)) return(list(err = "Group A and Group B must be different."))
+
+    df[[y]] <- suppressWarnings(as.numeric(df[[y]]))
+    df <- df[!is.na(df[[y]]), , drop = FALSE]
+    df <- df[as.character(df[[g]]) %in% c(a_lab, b_lab), , drop = FALSE]
+    if (nrow(df) < 2) return(list(err = "Not enough non-NA values across the two groups (after filters)."))
+
+    paired <- isTRUE(input$ttest_paired)
+    var_equal <- identical(input$ttest_variance %||% "welch", "equal")
+    alternative <- input$ttest_alternative %||% "two.sided"
+    alpha <- input$ttest_alpha %||% 0.05
+    conf_level <- 1 - alpha
+
+    if (paired) {
+      id_col <- input$idcol
+      if (is.null(id_col) || !nzchar(id_col) || !(id_col %in% names(df))) {
+        return(list(err = "Paired t-test needs an ID column (set 'ID column' in the Exclude section)."))
+      }
+      mask_a <- as.character(df[[g]]) == a_lab
+      mask_b <- as.character(df[[g]]) == b_lab
+      df_a <- data.frame(.id = df[[id_col]][mask_a], .y = df[[y]][mask_a], stringsAsFactors = FALSE)
+      df_b <- data.frame(.id = df[[id_col]][mask_b], .y = df[[y]][mask_b], stringsAsFactors = FALSE)
+      df_a <- aggregate(.y ~ .id, data = df_a, FUN = mean, na.rm = TRUE)
+      df_b <- aggregate(.y ~ .id, data = df_b, FUN = mean, na.rm = TRUE)
+      names(df_a)[2] <- ".y_a"
+      names(df_b)[2] <- ".y_b"
+      merged <- merge(df_a, df_b, by = ".id")
+      if (nrow(merged) < 2) return(list(err = "Paired t-test needs at least 2 IDs present in both groups."))
+      fit <- tryCatch(
+        t.test(merged$.y_a, merged$.y_b, paired = TRUE, alternative = alternative, conf.level = conf_level),
+        error = function(e) e
+      )
+      if (inherits(fit, "error")) return(list(err = paste("t-test failed:", fit$message)))
+      return(list(
+        fit = fit, n_a = nrow(merged), n_b = nrow(merged),
+        paired = TRUE, method = "Paired t-test",
+        a_lab = a_lab, b_lab = b_lab, y = y, g = g, alpha = alpha
+      ))
+    }
+
+    a_vals <- df[[y]][as.character(df[[g]]) == a_lab]
+    b_vals <- df[[y]][as.character(df[[g]]) == b_lab]
+    if (length(a_vals) < 2 || length(b_vals) < 2) {
+      return(list(err = "Each group needs at least 2 non-NA values."))
+    }
+    fit <- tryCatch(
+      t.test(a_vals, b_vals, var.equal = var_equal, alternative = alternative, conf.level = conf_level),
+      error = function(e) e
+    )
+    if (inherits(fit, "error")) return(list(err = paste("t-test failed:", fit$message)))
+
+    list(
+      fit = fit, n_a = length(a_vals), n_b = length(b_vals),
+      paired = FALSE,
+      method = if (var_equal) "Two-sample t-test (pooled variance)" else "Welch two-sample t-test",
+      a_lab = a_lab, b_lab = b_lab, y = y, g = g, alpha = alpha
+    )
+  }
+
+  print_ttest_res <- function(res) {
+    if (!is.null(res$err)) { cat(res$err, "\n"); return(invisible(NULL)) }
+    cat("Method:    ", res$method, "\n", sep = "")
+    cat("Response:  ", res$y, "  |  Group column: ", res$g, "\n", sep = "")
+    cat("Group A:   ", res$a_lab, " (n = ", res$n_a, ")\n", sep = "")
+    cat("Group B:   ", res$b_lab, " (n = ", res$n_b, ")\n\n", sep = "")
+    print(res$fit)
+    sig <- isTRUE(res$fit$p.value < res$alpha)
+    cat("\nSignificant at alpha = ", res$alpha, ": ", if (sig) "YES" else "NO", "\n", sep = "")
+  }
+
+  output$ttest_out <- renderPrint({
+    if (!isTRUE(input$do_stats) || !isTRUE(input$do_ttest)) {
+      cat("t-test is off (toggle 'Enable stats' and 'Run t-test' in the sidebar).\n")
+      return(invisible(NULL))
+    }
+    df <- df_work()
+    if (is.null(df) || nrow(df) < 2) {
+      cat("Not enough data after filters.\n")
+      return(invisible(NULL))
+    }
+    print_ttest_res(run_ttest_for_df(df))
+  })
+
   anova_results <- reactive({
     req(isTRUE(input$do_anova))
     df <- df_work()
     req(nrow(df) > 1)
 
-    cols <- names(df)
-    req(!is.null(input$anova_y), input$anova_y %in% cols)
-    y <- input$anova_y
-    factors <- get_anova_factors()
+    if (length(get_anova_factors()) < 1) return(list(err = "Pick at least 1 factor (Factor A)."))
+    fml <- build_anova_formula(df)
+    if (is.null(fml)) return(list(err = "Could not build ANOVA formula."))
 
-    nB <- input$anova_n_blocks %||% 0
-    blocks <- character(0)
-    if (nB > 0) {
-      for (i in seq_len(nB)) {
-        b <- input[[paste0("anova_block_", i)]]
-        if (!is.null(b) && nzchar(b) && b %in% cols) blocks <- c(blocks, b)
-      }
-      blocks <- unique(blocks)
-    }
-
-    if (length(factors) < 1) return(list(err = "Pick at least 1 factor (Factor A)."))
-
-    df[[y]] <- suppressWarnings(as.numeric(df[[y]]))
-    df <- df[!is.na(df[[y]]), , drop = FALSE]
+    prep <- prep_anova_data(df, fml)
+    df <- prep$df
+    factors <- prep$factors
+    blocks <- get_anova_blocks(names(df))
     if (nrow(df) < 2) return(list(err = "Not enough non-NA Y values."))
 
-    for (f in factors) df[[f]] <- as.factor(df[[f]])
-    for (b in blocks) df[[b]] <- as.factor(df[[b]])
-
-    interaction_mode <- input$anova_interaction_mode %||% "two_way"
-    if (interaction_mode == "none" || length(factors) == 1) {
-      rhs <- paste(factors, collapse = " + ")
-    } else if (interaction_mode == "full") {
-      rhs <- paste(factors, collapse = " * ")
-    } else {
-      main <- paste(factors, collapse = " + ")
-      pair_terms <- combn(factors, 2, FUN = function(x) paste0(x[1], ":", x[2]))
-      rhs <- paste(c(main, pair_terms), collapse = " + ")
-    }
-    if (length(blocks) > 0) rhs <- paste(rhs, "+", paste(blocks, collapse = " + "))
-
-    fml <- as.formula(paste(y, "~", rhs))
     anova_method <- input$anova_method %||% "regular"
     if (identical(anova_method, "regular")) {
       fit <- tryCatch(aov(fml, data = df), error = function(e) e)
@@ -797,10 +940,10 @@ server <- function(input, output, session) {
       col_id <- paste0("filter_col_", i)
       mode_id <- paste0("filter_mode_", i)
 
-      selected_col <- safe_list_get(rv_filters$cols, i)
+      selected_col <- isolate(safe_list_get(rv_filters$cols, i))
       if (is.null(selected_col) || !(selected_col %in% cols)) selected_col <- cols[1]
 
-      selected_mode <- safe_list_get(rv_filters$modes, i)
+      selected_mode <- isolate(safe_list_get(rv_filters$modes, i))
       if (is.null(selected_mode) || !(selected_mode %in% c("keep", "remove"))) selected_mode <- "keep"
 
       tagList(
@@ -813,6 +956,42 @@ server <- function(input, output, session) {
     })
     tagList(filter_list)
   })
+
+  render_anova_for_df <- function(dfi) {
+    if (!isTRUE(input$do_anova)) {
+      cat("ANOVA is off (toggle 'Run ANOVA' in the sidebar).\n")
+      return(invisible(NULL))
+    }
+    fml <- build_anova_formula(dfi)
+    if (is.null(fml)) { cat("Pick at least 1 factor.\n"); return(invisible(NULL)) }
+
+    prep <- prep_anova_data(dfi, fml)
+    dfi <- prep$df
+    if (nrow(dfi) < 2) { cat("Not enough non-NA Y values for this panel.\n"); return(invisible(NULL)) }
+
+    fit <- tryCatch(aov(fml, data = dfi), error = function(e) e)
+    if (inherits(fit, "error")) { cat("ANOVA failed:", fit$message, "\n"); return(invisible(NULL)) }
+
+    cat("Model formula:\n"); print(fml)
+    cat("\nANOVA summary:\n"); print(summary(fit))
+
+    if (isTRUE(input$do_tukey)) {
+      term <- input$tukey_term
+      cat("\nTukey HSD:\n")
+      tuk0 <- tryCatch(TukeyHSD(fit, which = term), error = function(e) e)
+      if (inherits(tuk0, "error")) { cat("Tukey error:", tuk0$message, "\n"); return(invisible(NULL)) }
+      if (!(term %in% names(tuk0))) {
+        cat("Tukey term not found in model:", term, "\nAvailable terms:", paste(names(tuk0), collapse = ", "), "\n")
+        return(invisible(NULL))
+      }
+      mat <- as.data.frame(tuk0[[term]])
+      mat$Comparison <- rownames(mat)
+      alpha <- input$tukey_alpha %||% 0.05
+      if (isTRUE(input$tukey_sig_only)) mat <- mat[mat$`p adj` < alpha, , drop = FALSE]
+      cat("Term:", term, "\n")
+      print(mat)
+    }
+  }
 
   output$anova_out <- renderPrint({
     if (!isTRUE(input$do_anova)) {
@@ -880,6 +1059,11 @@ server <- function(input, output, session) {
   make_one_plot <- function(df) {
     req(input$xcol, input$ycol)
 
+    ymin_v <- input$ymin %||% 0
+    ymax_v <- input$ymax %||% 30
+    yrange <- ymax_v - ymin_v
+    if (is.na(yrange) || yrange == 0) yrange <- 1
+
     df[[input$ycol]] <- suppressWarnings(as.numeric(df[[input$ycol]]))
 
     x_raw <- as.character(df[[input$xcol]])
@@ -931,9 +1115,7 @@ server <- function(input, output, session) {
         }
 
         if (!is.null(rect_df) && nrow(rect_df) > 0) {
-          y_top <- input$ymax %||% max(df[[input$ycol]], na.rm = TRUE)
-          yrange <- input$ymax - input$ymin
-          if (is.null(yrange) || is.na(yrange) || yrange == 0) yrange <- 1
+          y_top <- ymax_v
           y_label <- y_top - 0.03 * yrange
 
           label_text <- input$shade_label %||% "Before Mating"
@@ -1041,9 +1223,7 @@ server <- function(input, output, session) {
               }
 
               pos_df <- pos_df %>% left_join(letters_df, by = c(".__tukey_key__" = "level"))
-              yr <- input$ymax - input$ymin
-              if (is.null(yr) || is.na(yr) || yr == 0) yr <- 1
-              pos_df$ypos <- pos_df$ypos + 0.05 * yr
+              pos_df$ypos <- pos_df$ypos + 0.05 * yrange
 
               if (nzchar(input$fillcol)) {
                 p <- p + geom_text(
@@ -1081,7 +1261,7 @@ server <- function(input, output, session) {
 
     p <- p +
       scale_x_discrete(drop = FALSE) +
-      coord_cartesian(ylim = c(input$ymin, input$ymax)) +
+      coord_cartesian(ylim = c(ymin_v, ymax_v)) +
       theme_bw(base_size = base_size) +
       theme(
         legend.position = if (nzchar(input$fillcol) || nzchar(input$shapecol)) "bottom" else "none",
@@ -1130,7 +1310,7 @@ server <- function(input, output, session) {
           vals <- sort(vals[!is.na(vals)])
 
           selected_vals <- coalesce_chr(
-            input[[paste0("filter_val_", ii)]],
+            isolate(input[[paste0("filter_val_", ii)]]),
             isolate(safe_list_get(rv_filters$vals, ii))
           )
           selected_vals <- selected_vals[selected_vals %in% vals]
@@ -1167,11 +1347,13 @@ server <- function(input, output, session) {
   })
 
   output$plot_ui <- renderUI({
-    req(input$plot_height)
+    req(input$plot_height, input$plot_width)
+    plot_w <- paste0(input$plot_width * 72, "px")
+    plot_h <- paste0(input$plot_height * 72, "px")
 
     if (is.null(input$split_col) || !nzchar(input$split_col)) {
       return(tagList(
-        plotOutput("plot", height = paste0(input$plot_height * 72, "px")),
+        plotOutput("plot", width = plot_w, height = plot_h),
         tags$hr(),
         h4("Assumption checks"),
         verbatimTextOutput("assump_out"),
@@ -1185,6 +1367,9 @@ server <- function(input, output, session) {
           "Most important: independence > equal variance > normality."
         ),
         tags$hr(),
+        h4("t-test"),
+        verbatimTextOutput("ttest_out"),
+        tags$hr(),
         h4("ANOVA / Tukey"),
         verbatimTextOutput("anova_out")
       ))
@@ -1193,10 +1378,13 @@ server <- function(input, output, session) {
     df <- df_work()
     if (!(input$split_col %in% names(df))) {
       return(tagList(
-        plotOutput("plot", height = paste0(input$plot_height * 72, "px")),
+        plotOutput("plot", width = plot_w, height = plot_h),
         tags$hr(),
         h4("Assumption checks"),
         verbatimTextOutput("assump_out"),
+        tags$hr(),
+        h4("t-test"),
+        verbatimTextOutput("ttest_out"),
         tags$hr(),
         h4("ANOVA / Tukey"),
         verbatimTextOutput("anova_out")
@@ -1208,11 +1396,13 @@ server <- function(input, output, session) {
 
     tagList(lapply(seq_along(lvls), function(i) {
       tagList(
-        plotOutput(outputId = paste0("plot_", i), height = paste0(input$plot_height * 72, "px")),
+        plotOutput(outputId = paste0("plot_", i), width = plot_w, height = plot_h),
         tags$hr(),
         h4(paste0("Stats: ", input$split_col, " = ", lvls[i])),
         h5("Assumption checks"),
         verbatimTextOutput(paste0("assump_out_", i)),
+        h5("t-test"),
+        verbatimTextOutput(paste0("ttest_out_", i)),
         h5("ANOVA / Tukey"),
         verbatimTextOutput(paste0("anova_out_", i)),
         tags$hr()
@@ -1259,64 +1449,22 @@ server <- function(input, output, session) {
           cat(assumption_results_for_df(dfi), "\n")
         })
 
-        output[[paste0("anova_out_", ii)]] <- renderPrint({
-          if (!isTRUE(input$do_anova)) {
-            cat("ANOVA is off (toggle 'Run ANOVA' in the sidebar).\n")
+        output[[paste0("ttest_out_", ii)]] <- renderPrint({
+          if (!isTRUE(input$do_stats) || !isTRUE(input$do_ttest)) {
+            cat("t-test is off.\n")
             return(invisible(NULL))
           }
-
           dfi <- df %>% filter(as.character(.data[[input$split_col]]) == lvl)
-          fml <- build_anova_formula(dfi)
-          if (is.null(fml)) {
-            cat("Pick at least 1 factor.\n")
+          if (is.null(dfi) || nrow(dfi) < 2) {
+            cat("Not enough data in this panel.\n")
             return(invisible(NULL))
           }
+          print_ttest_res(run_ttest_for_df(dfi))
+        })
 
-          y <- all.vars(fml)[1]
-          dfi[[y]] <- suppressWarnings(as.numeric(dfi[[y]]))
-          dfi <- dfi[!is.na(dfi[[y]]), , drop = FALSE]
-
-          if (nrow(dfi) < 2) {
-            cat("Not enough non-NA Y values for this panel.\n")
-            return(invisible(NULL))
-          }
-
-          fit <- tryCatch(aov(fml, data = dfi), error = function(e) e)
-          if (inherits(fit, "error")) {
-            cat("ANOVA failed:", fit$message, "\n")
-            return(invisible(NULL))
-          }
-
-          cat("Model formula:\n")
-          print(fml)
-          cat("\nANOVA summary:\n")
-          print(summary(fit))
-
-          if (isTRUE(input$do_tukey)) {
-            term <- input$tukey_term
-            cat("\nTukey HSD:\n")
-
-            tuk0 <- tryCatch(TukeyHSD(fit, which = term), error = function(e) e)
-            if (inherits(tuk0, "error")) {
-              cat("Tukey error:", tuk0$message, "\n")
-              return(invisible(NULL))
-            }
-
-            if (!(term %in% names(tuk0))) {
-              cat("Tukey term not found in model:", term, "\n")
-              cat("Available terms:", paste(names(tuk0), collapse = ", "), "\n")
-              return(invisible(NULL))
-            }
-
-            mat <- as.data.frame(tuk0[[term]])
-            mat$Comparison <- rownames(mat)
-
-            alpha <- input$tukey_alpha
-            if (isTRUE(input$tukey_sig_only)) mat <- mat[mat$`p adj` < alpha, , drop = FALSE]
-
-            cat("Term:", term, "\n")
-            print(mat)
-          }
+        output[[paste0("anova_out_", ii)]] <- renderPrint({
+          dfi <- df %>% filter(as.character(.data[[input$split_col]]) == lvl)
+          render_anova_for_df(dfi)
         })
       })
     }
@@ -1333,4 +1481,3 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
-›
