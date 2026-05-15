@@ -759,6 +759,58 @@ server <- function(input, output, session) {
     cat(assumption_results_for_df(df), "\n")
   })
 
+  compute_descriptive_stats <- function(df) {
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    if (is.null(input$ycol) || !nzchar(input$ycol) || !(input$ycol %in% names(df))) return(NULL)
+
+    y <- input$ycol
+    df[[y]] <- suppressWarnings(as.numeric(df[[y]]))
+    df <- df[!is.na(df[[y]]), , drop = FALSE]
+    if (nrow(df) == 0) return(NULL)
+
+    group_cols <- character(0)
+    for (k in c("xcol", "fillcol", "facet_row", "facet_col")) {
+      v <- input[[k]]
+      if (!is.null(v) && nzchar(v) && v %in% names(df)) group_cols <- c(group_cols, v)
+    }
+    group_cols <- unique(group_cols)
+
+    if (length(group_cols) == 0) {
+      out <- df %>% summarise(
+        n      = sum(!is.na(.data[[y]])),
+        mean   = mean(.data[[y]], na.rm = TRUE),
+        sd     = sd(.data[[y]], na.rm = TRUE),
+        se     = sd(.data[[y]], na.rm = TRUE) / sqrt(sum(!is.na(.data[[y]]))),
+        median = median(.data[[y]], na.rm = TRUE),
+        min    = min(.data[[y]], na.rm = TRUE),
+        Q1     = quantile(.data[[y]], 0.25, na.rm = TRUE, names = FALSE),
+        Q3     = quantile(.data[[y]], 0.75, na.rm = TRUE, names = FALSE),
+        max    = max(.data[[y]], na.rm = TRUE)
+      )
+    } else {
+      out <- df %>%
+        group_by(across(all_of(group_cols))) %>%
+        summarise(
+          n      = sum(!is.na(.data[[y]])),
+          mean   = mean(.data[[y]], na.rm = TRUE),
+          sd     = sd(.data[[y]], na.rm = TRUE),
+          se     = sd(.data[[y]], na.rm = TRUE) / sqrt(sum(!is.na(.data[[y]]))),
+          median = median(.data[[y]], na.rm = TRUE),
+          min    = min(.data[[y]], na.rm = TRUE),
+          Q1     = quantile(.data[[y]], 0.25, na.rm = TRUE, names = FALSE),
+          Q3     = quantile(.data[[y]], 0.75, na.rm = TRUE, names = FALSE),
+          max    = max(.data[[y]], na.rm = TRUE),
+          .groups = "drop"
+        )
+    }
+    as.data.frame(out)
+  }
+
+  output$desc_table <- renderTable({
+    df <- df_work()
+    compute_descriptive_stats(df)
+  }, digits = 3, striped = TRUE, hover = TRUE, na = "—")
+
   run_ttest_for_df <- function(df) {
     cols <- names(df)
     y <- input$ttest_y
@@ -1351,63 +1403,84 @@ server <- function(input, output, session) {
     plot_w <- paste0(input$plot_width * 72, "px")
     plot_h <- paste0(input$plot_height * 72, "px")
 
-    if (is.null(input$split_col) || !nzchar(input$split_col)) {
-      return(tagList(
-        plotOutput("plot", width = plot_w, height = plot_h),
-        tags$hr(),
+    split_active <- !is.null(input$split_col) && nzchar(input$split_col)
+    df_split <- if (split_active) df_work() else NULL
+    has_split <- split_active && !is.null(df_split) && input$split_col %in% names(df_split)
+
+    stats_help <- tags$small(
+      "How to interpret:",
+      tags$ul(
+        tags$li("Equal Variance (Fligner/Bartlett): p ≥ 0.05 → variances equal (ANOVA appropriate). p < 0.05 → variances unequal (consider Welch ANOVA)."),
+        tags$li("Normality (Shapiro-Wilk): p ≥ 0.05 → normality OK. p < 0.05 → residuals deviate from normal."),
+        tags$li("Outliers: |standardized residual| > 3 suggests influential observations.")
+      ),
+      "Most important: independence > equal variance > normality."
+    )
+
+    if (!has_split) {
+      plot_tab <- plotOutput("plot", width = plot_w, height = plot_h)
+      stats_tab <- tagList(
         h4("Assumption checks"),
         verbatimTextOutput("assump_out"),
-        tags$small(
-          "How to interpret:",
-          tags$ul(
-            tags$li("Equal Variance (Fligner/Bartlett): p ≥ 0.05 → variances equal (ANOVA appropriate). p < 0.05 → variances unequal (consider Welch ANOVA)."),
-            tags$li("Normality (Shapiro-Wilk): p ≥ 0.05 → normality OK. p < 0.05 → residuals deviate from normal."),
-            tags$li("Outliers: |standardized residual| > 3 suggests influential observations.")
-          ),
-          "Most important: independence > equal variance > normality."
-        ),
+        stats_help,
         tags$hr(),
         h4("t-test"),
         verbatimTextOutput("ttest_out"),
         tags$hr(),
         h4("ANOVA / Tukey"),
         verbatimTextOutput("anova_out")
-      ))
-    }
-
-    df <- df_work()
-    if (!(input$split_col %in% names(df))) {
-      return(tagList(
-        plotOutput("plot", width = plot_w, height = plot_h),
-        tags$hr(),
-        h4("Assumption checks"),
-        verbatimTextOutput("assump_out"),
-        tags$hr(),
-        h4("t-test"),
-        verbatimTextOutput("ttest_out"),
-        tags$hr(),
-        h4("ANOVA / Tukey"),
-        verbatimTextOutput("anova_out")
-      ))
-    }
-
-    lvls <- unique(as.character(df[[input$split_col]]))
-    lvls <- lvls[!is.na(lvls) & nzchar(lvls)]
-
-    tagList(lapply(seq_along(lvls), function(i) {
-      tagList(
-        plotOutput(outputId = paste0("plot_", i), width = plot_w, height = plot_h),
-        tags$hr(),
-        h4(paste0("Stats: ", input$split_col, " = ", lvls[i])),
-        h5("Assumption checks"),
-        verbatimTextOutput(paste0("assump_out_", i)),
-        h5("t-test"),
-        verbatimTextOutput(paste0("ttest_out_", i)),
-        h5("ANOVA / Tukey"),
-        verbatimTextOutput(paste0("anova_out_", i)),
-        tags$hr()
       )
-    }))
+      desc_tab <- tagList(
+        helpText("Summary of Y grouped by X (and Fill / facets if set), after current filters."),
+        tableOutput("desc_table")
+      )
+    } else {
+      lvls <- unique(as.character(df_split[[input$split_col]]))
+      lvls <- lvls[!is.na(lvls) & nzchar(lvls)]
+
+      plot_tab <- tagList(lapply(seq_along(lvls), function(i) {
+        tagList(
+          h4(paste0(input$split_col, " = ", lvls[i])),
+          plotOutput(outputId = paste0("plot_", i), width = plot_w, height = plot_h),
+          tags$hr()
+        )
+      }))
+
+      stats_tab <- tagList(
+        stats_help,
+        tags$hr(),
+        lapply(seq_along(lvls), function(i) {
+          tagList(
+            h4(paste0(input$split_col, " = ", lvls[i])),
+            h5("Assumption checks"),
+            verbatimTextOutput(paste0("assump_out_", i)),
+            h5("t-test"),
+            verbatimTextOutput(paste0("ttest_out_", i)),
+            h5("ANOVA / Tukey"),
+            verbatimTextOutput(paste0("anova_out_", i)),
+            tags$hr()
+          )
+        })
+      )
+
+      desc_tab <- tagList(
+        helpText("Summary of Y grouped by X (and Fill / facets if set), per split panel."),
+        lapply(seq_along(lvls), function(i) {
+          tagList(
+            h4(paste0(input$split_col, " = ", lvls[i])),
+            tableOutput(paste0("desc_table_", i)),
+            tags$hr()
+          )
+        })
+      )
+    }
+
+    tabsetPanel(
+      id = "main_tabs",
+      tabPanel("Plot", plot_tab),
+      tabPanel("Stats", stats_tab),
+      tabPanel("Descriptive", desc_tab)
+    )
   })
 
   output$plot <- renderPlot({
@@ -1466,6 +1539,11 @@ server <- function(input, output, session) {
           dfi <- df %>% filter(as.character(.data[[input$split_col]]) == lvl)
           render_anova_for_df(dfi)
         })
+
+        output[[paste0("desc_table_", ii)]] <- renderTable({
+          dfi <- df %>% filter(as.character(.data[[input$split_col]]) == lvl)
+          compute_descriptive_stats(dfi)
+        }, digits = 3, striped = TRUE, hover = TRUE, na = "—")
       })
     }
   })
