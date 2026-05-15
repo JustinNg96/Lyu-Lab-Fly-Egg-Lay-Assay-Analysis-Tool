@@ -9,6 +9,25 @@ library(multcompView)
   if (!is.null(a) && length(a) > 0 && !all(is.na(a))) a else b
 }
 
+parse_relabel_map <- function(txt) {
+  if (is.null(txt) || !nzchar(trimws(txt))) return(setNames(character(0), character(0)))
+  lines <- strsplit(txt, "\n", fixed = TRUE)[[1]]
+  lines <- lines[nzchar(trimws(lines))]
+  pairs <- lapply(lines, function(ln) {
+    parts <- strsplit(ln, "=", fixed = TRUE)[[1]]
+    if (length(parts) < 2) return(NULL)
+    key <- trimws(parts[[1]])
+    val <- trimws(paste(parts[-1], collapse = "="))
+    if (!nzchar(key)) return(NULL)
+    c(key, val)
+  })
+  pairs <- pairs[!vapply(pairs, is.null, logical(1))]
+  if (length(pairs) == 0) return(setNames(character(0), character(0)))
+  keys <- vapply(pairs, `[[`, character(1), 1)
+  vals <- vapply(pairs, `[[`, character(1), 2)
+  setNames(vals, keys)
+}
+
 read_pasted_table <- function(txt) {
   if (nchar(trimws(txt)) == 0) return(NULL)
   con <- textConnection(txt)
@@ -203,6 +222,19 @@ ui <- fluidPage(
       tags$hr(),
       numericInput("ymin", "Y min", 0),
       numericInput("ymax", "Y max", 30),
+
+      tags$hr(),
+      h4("Plot labels"),
+      textInput("legend_title_fill", "Fill legend title (blank = column name)", value = ""),
+      textInput("legend_title_shape", "Shape legend title (blank = column name)", value = ""),
+      textAreaInput(
+        "level_relabel",
+        "Rename levels (one per line: old=new)",
+        value = "",
+        placeholder = "OO=Old/Old\nYY=Young/Young",
+        rows = 4
+      ),
+      helpText("Applies to X axis ticks, fill/shape legend levels, and facet strip labels."),
 
       h4("Stats (Assumptions → ANOVA → Tukey)"),
       checkboxInput("do_stats", "Enable stats", FALSE),
@@ -1301,18 +1333,38 @@ server <- function(input, output, session) {
       }
     }
 
+    relabel_map <- parse_relabel_map(input$level_relabel)
+    relabel <- function(x) {
+      x <- as.character(x)
+      hits <- x %in% names(relabel_map)
+      x[hits] <- unname(relabel_map[x[hits]])
+      x
+    }
+
     fr <- if (nzchar(input$facet_row)) input$facet_row else "."
     fc <- if (nzchar(input$facet_col)) input$facet_col else "."
     if (fr != "." || fc != ".") {
-      p <- p + facet_grid(as.formula(paste(fr, "~", fc)), scales = if (isTRUE(input$split_free_y)) "free_y" else "fixed")
+      p <- p + facet_grid(
+        as.formula(paste(fr, "~", fc)),
+        scales = if (isTRUE(input$split_free_y)) "free_y" else "fixed",
+        labeller = labeller(.default = relabel)
+      )
     }
 
     base_size <- 11 * input$text_scale
     xlab <- if (nzchar(input$xlabel_custom)) input$xlabel_custom else input$xcol
     ylab <- if (nzchar(input$ylabel_custom)) input$ylabel_custom else input$ycol
 
+    fill_title <- if (nzchar(input$legend_title_fill %||% "")) input$legend_title_fill
+                  else if (nzchar(input$fillcol) && input$fillcol == "group") "Group"
+                  else if (nzchar(input$fillcol)) input$fillcol
+                  else NULL
+    shape_title <- if (nzchar(input$legend_title_shape %||% "")) input$legend_title_shape
+                   else if (nzchar(input$shapecol)) input$shapecol
+                   else NULL
+
     p <- p +
-      scale_x_discrete(drop = FALSE) +
+      scale_x_discrete(drop = FALSE, labels = relabel) +
       coord_cartesian(ylim = c(ymin_v, ymax_v)) +
       theme_bw(base_size = base_size) +
       theme(
@@ -1328,9 +1380,11 @@ server <- function(input, output, session) {
         subtitle = input$subtitle_custom %||% NULL,
         x = xlab,
         y = ylab,
-        fill = if (input$fillcol == "group") "Group" else if (nzchar(input$fillcol)) input$fillcol else NULL,
-        shape = if (nzchar(input$shapecol)) input$shapecol else NULL
+        fill = fill_title,
+        shape = shape_title
       )
+
+    if (nzchar(input$shapecol)) p <- p + scale_shape_discrete(labels = relabel)
 
     if (nzchar(input$fillcol) && isTRUE(input$custom_fill_colors) && nzchar(input$fill_colors)) {
       cols <- strsplit(input$fill_colors, ",", fixed = TRUE)[[1]] |> trimws()
@@ -1338,8 +1392,10 @@ server <- function(input, output, session) {
       if (length(cols) > 0) {
         n_levels <- nlevels(df[[input$fillcol]])
         if (length(cols) < n_levels) cols <- rep(cols, length.out = n_levels)
-        p <- p + scale_fill_manual(values = cols[seq_len(n_levels)])
+        p <- p + scale_fill_manual(values = cols[seq_len(n_levels)], labels = relabel)
       }
+    } else if (nzchar(input$fillcol)) {
+      p <- p + scale_fill_discrete(labels = relabel)
     }
 
     p
