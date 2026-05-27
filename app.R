@@ -4,6 +4,7 @@ library(dplyr)
 library(ggplot2)
 library(janitor)
 library(multcompView)
+library(DT)
 
 `%||%` <- function(a, b) {
   if (!is.null(a) && length(a) > 0 && !all(is.na(a))) a else b
@@ -843,6 +844,23 @@ server <- function(input, output, session) {
     compute_descriptive_stats(df)
   }, digits = 3, striped = TRUE, hover = TRUE, na = "—")
 
+  mapped_columns <- function(df) {
+    keep <- character(0)
+    for (k in c("idcol", "xcol", "ycol", "fillcol", "shapecol", "facet_row", "facet_col", "split_col")) {
+      v <- input[[k]]
+      if (!is.null(v) && nzchar(v) && v %in% names(df)) keep <- c(keep, v)
+    }
+    unique(keep)
+  }
+
+  output$data_table <- DT::renderDT({
+    df <- df_work()
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    cols <- mapped_columns(df)
+    if (length(cols) == 0) df else df[, cols, drop = FALSE]
+  }, options = list(pageLength = 25, scrollX = TRUE, lengthMenu = c(10, 25, 50, 100, 250)),
+     rownames = FALSE, filter = "top")
+
   run_ttest_for_df <- function(df) {
     cols <- names(df)
     y <- input$ttest_y
@@ -1474,8 +1492,9 @@ server <- function(input, output, session) {
     )
 
     if (!has_split) {
-      plot_tab <- plotOutput("plot", width = plot_w, height = plot_h)
-      stats_tab <- tagList(
+      plot_tab <- tagList(
+        plotOutput("plot", width = plot_w, height = plot_h),
+        tags$hr(),
         h4("Assumption checks"),
         verbatimTextOutput("assump_out"),
         stats_help,
@@ -1494,20 +1513,13 @@ server <- function(input, output, session) {
       lvls <- unique(as.character(df_split[[input$split_col]]))
       lvls <- lvls[!is.na(lvls) & nzchar(lvls)]
 
-      plot_tab <- tagList(lapply(seq_along(lvls), function(i) {
-        tagList(
-          h4(paste0(input$split_col, " = ", lvls[i])),
-          plotOutput(outputId = paste0("plot_", i), width = plot_w, height = plot_h),
-          tags$hr()
-        )
-      }))
-
-      stats_tab <- tagList(
+      plot_tab <- tagList(
         stats_help,
         tags$hr(),
         lapply(seq_along(lvls), function(i) {
           tagList(
             h4(paste0(input$split_col, " = ", lvls[i])),
+            plotOutput(outputId = paste0("plot_", i), width = plot_w, height = plot_h),
             h5("Assumption checks"),
             verbatimTextOutput(paste0("assump_out_", i)),
             h5("t-test"),
@@ -1531,11 +1543,16 @@ server <- function(input, output, session) {
       )
     }
 
+    data_tab <- tagList(
+      helpText("Filtered dataset feeding the plot — only the columns selected in Map fields / Experiment ID / Split, after current filters and ID keep list."),
+      DT::DTOutput("data_table")
+    )
+
     tabsetPanel(
       id = "main_tabs",
-      tabPanel("Plot", plot_tab),
-      tabPanel("Stats", stats_tab),
-      tabPanel("Descriptive", desc_tab)
+      tabPanel("Plot & stats", plot_tab),
+      tabPanel("Descriptive", desc_tab),
+      tabPanel("Data", data_tab)
     )
   })
 
